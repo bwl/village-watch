@@ -45,19 +45,15 @@ func ViewWithStatus(sc scene.Scene, t Theme, width, height int, paused, filterAc
 		b.WriteByte('\n')
 	}
 	
-	// Enhanced status line with indicators
 	statusLine := sc.Status
-	if paused {
-		statusLine = "[PAUSED] " + statusLine
-	}
-	if filterActive {
-		statusLine = "[FILTERED] " + statusLine
-	}
+	if paused { statusLine = "[PAUSED] " + statusLine }
+	if filterActive { statusLine = "[FILTERED] " + statusLine }
+	if sc.LabelsVisible { statusLine = "[LABELS] " + statusLine }
 	statusLine += " | Theme: " + currentTheme
 	
 	b.WriteString(t.HUD.Render(statusLine))
 	b.WriteByte('\n')
-	b.WriteString(t.HUD.Render("(q) quit  (p) pause  (h) help  (f) filter  (t) theme  (r) refresh"))
+	b.WriteString(t.HUD.Render("(q) quit  (p) pause  (h) help  (f) filter  (l) labels  (t) theme  (r) refresh"))
 	return b.String()
 }
 

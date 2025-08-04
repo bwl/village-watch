@@ -18,20 +18,21 @@ type tickMsg time.Time
 type eventsMsg watch.EventOut
 
 type Model struct {
-	root          string
-	cfg           config.Config
-	width, height int
-	repo          *domain.RepoState
-	scene         scene.Scene
-	paused        bool
-	out           chan watch.EventOut
-	stop          func() error
-	lastResize    time.Time
-	lastTick      time.Time
-	fps           float64
-	frameCount    int
-	showHelp      bool
-	filterActive  bool
+	root           string
+	cfg            config.Config
+	width, height  int
+	repo           *domain.RepoState
+	scene          scene.Scene
+	paused         bool
+	out            chan watch.EventOut
+	stop           func() error
+	lastResize     time.Time
+	lastTick       time.Time
+	fps            float64
+	frameCount     int
+	showHelp       bool
+	filterActive   bool
+	labelsVisible  bool
 }
 
 func NewModel(root string, cfg config.Config) (Model, error) {
@@ -43,7 +44,7 @@ func NewModel(root string, cfg config.Config) (Model, error) {
 	if err != nil {
 		return Model{}, err
 	}
-	m := Model{root: root, cfg: cfg, repo: repo, out: out, stop: stop}
+	m := Model{root: root, cfg: cfg, repo: repo, out: out, stop: stop, labelsVisible: false}
 	return m, nil
 }
 
@@ -67,6 +68,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.showHelp = !m.showHelp
 		case "f":
 			m.filterActive = !m.filterActive
+		case "l":
+			m.labelsVisible = !m.labelsVisible
 		case "t":
 			// Cycle through themes
 			themes := []string{"forest", "seaside", "desert", "contrast"}
@@ -99,9 +102,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.frameCount++
 		
 		if !m.paused {
-			// Update animation states (expire old ones)
 			m.repo.UpdateStates()
-			m.scene = scene.DeriveWithFPS(m.repo, max(10, m.width), max(5, m.height-2), m.cfg.Render.Unicode, m.fps)
+			s := scene.DeriveWithFPS(m.repo, max(10, m.width), max(5, m.height-2), m.cfg.Render.Unicode, m.fps)
+			s.LabelsVisible = m.labelsVisible
+			if s.LabelsVisible {
+				s.DrawLabels(m.repo)
+				vx, vy := s.ViewportX, s.ViewportY
+				w, h := max(10, m.width), max(5, m.height-2)
+				s.Canvas = scene.ExtractViewportForUI(s.VirtualMap, w, h, vx, vy)
+			}
+			m.scene = s
 		}
 		return m, tick(m.cfg.FPS)
 	case eventsMsg:

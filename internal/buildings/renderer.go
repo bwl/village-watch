@@ -13,6 +13,31 @@ type Renderer struct {
 	registry *Registry
 }
 
+func (r *Renderer) RenderLabel(grid [][]rune, slot layout.Slot, name string, cols, rows int) {
+	x, y := slot.X, slot.Y
+	w := slot.W
+	if w <= 0 || len(name) == 0 { return }
+	runes := []rune(name)
+	max := w
+	if max <= 0 { return }
+	if len(runes) > max {
+		if max >= 2 {
+			runes = append(runes[:max-1], '…')
+		} else {
+			runes = runes[:max]
+		}
+	}
+	startX := x + (w-len(runes))/2
+	labelY := y - 1
+	if labelY < 0 { labelY = y }
+	for i := 0; i < len(runes); i++ {
+		px := startX + i
+		if px >= 0 && px < cols && labelY >= 0 && labelY < rows {
+			grid[labelY][px] = runes[i]
+		}
+	}
+}
+
 // NewRenderer creates a new building renderer with default designs
 func NewRenderer() *Renderer {
 	return &Renderer{

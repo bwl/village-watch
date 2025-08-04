@@ -20,9 +20,10 @@ type Scene struct {
 	Canvas []string
 	W, H   int
 	Status string
-	VirtualMap [][]rune // Full 128x60 virtual map
-	ViewportX, ViewportY int // Current viewport position
-	buildingRenderer *buildings.Renderer // Modular building renderer
+	VirtualMap [][]rune
+	ViewportX, ViewportY int
+	buildingRenderer *buildings.Renderer
+	LabelsVisible bool
 }
 
 func Derive(repo *domain.RepoState, cols, rows int, unicode bool) Scene {
@@ -32,6 +33,18 @@ func Derive(repo *domain.RepoState, cols, rows int, unicode bool) Scene {
 // GetBuildingRenderer returns the building renderer for customization
 func (s *Scene) GetBuildingRenderer() *buildings.Renderer {
 	return s.buildingRenderer
+}
+
+func (s *Scene) DrawLabels(repo *domain.RepoState) {
+	if s == nil || s.buildingRenderer == nil || s.VirtualMap == nil || !s.LabelsVisible || repo == nil || repo.Root == nil {
+		return
+	}
+	slots, _ := layout.BSPWithRoads(repo.Root, VirtualMapWidth, VirtualMapHeight)
+	for _, slot := range slots {
+		node := repo.Index[slot.Path]
+		if node == nil || !node.IsDir { continue }
+		s.buildingRenderer.RenderLabel(s.VirtualMap, slot, node.Name, VirtualMapWidth, VirtualMapHeight)
+	}
 }
 
 func DeriveWithFPS(repo *domain.RepoState, cols, rows int, unicode bool, fps float64) Scene {
@@ -70,6 +83,9 @@ func DeriveWithFPS(repo *domain.RepoState, cols, rows int, unicode bool, fps flo
 	
 	// Create viewport of the virtual map
 	viewportX, viewportY := calculateViewport(cols, rows)
+	// Optional labels overlay
+	// If labels are requested, draw them before extracting viewport by overlaying text near slots
+	// LabelsVisible flag is applied by UI after construction; we therefore provide a helper path below
 	canvas := extractViewport(virtualMap, cols, rows, viewportX, viewportY)
 	
 	// Count active animations
@@ -99,14 +115,15 @@ func DeriveWithFPS(repo *domain.RepoState, cols, rows int, unicode bool, fps flo
 			animCount)
 	}
 	
-	return Scene{
-		Canvas: canvas, 
-		W: cols, H: rows, 
+	sc := Scene{
+		Canvas: canvas,
+		W: cols, H: rows,
 		Status: status,
 		VirtualMap: virtualMap,
 		ViewportX: viewportX, ViewportY: viewportY,
 		buildingRenderer: buildingRenderer,
 	}
+	return sc
 }
 
 // addRoads draws paths between districts and major buildings (legacy function - kept for compatibility)
@@ -192,4 +209,8 @@ func extractViewport(virtualMap [][]rune, viewWidth, viewHeight, viewportX, view
 	}
 	
 	return canvas
+}
+
+func ExtractViewportForUI(virtualMap [][]rune, viewWidth, viewHeight, viewportX, viewportY int) []string {
+	return extractViewport(virtualMap, viewWidth, viewHeight, viewportX, viewportY)
 }
