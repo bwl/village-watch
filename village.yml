@@ -1,0 +1,10 @@
+theme: forest
+fps: 20
+watch:
+  debounce_ms: 200
+  ignore:
+    - ".git/"
+    - "node_modules/"
+render:
+  unicode: true
+  lod_thresholds: { level1: 400, level2: 1200 }
