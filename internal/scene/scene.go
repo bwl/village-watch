@@ -11,10 +11,17 @@ import (
 
 type Tile struct{ Glyph string }
 
+const (
+	VirtualMapWidth  = 128
+	VirtualMapHeight = 60
+)
+
 type Scene struct {
 	Canvas []string
 	W, H   int
 	Status string
+	VirtualMap [][]rune // Full 256x224 virtual map
+	ViewportX, ViewportY int // Current viewport position
 }
 
 func Derive(repo *domain.RepoState, cols, rows int, unicode bool) Scene {
@@ -25,30 +32,37 @@ func DeriveWithFPS(repo *domain.RepoState, cols, rows int, unicode bool, fps flo
 	if repo == nil || repo.Root == nil {
 		return Scene{Canvas: []string{"(empty)"}}
 	}
-	grid := make([][]rune, rows)
-	for i := range grid {
-		grid[i] = make([]rune, cols)
-		for j := 0; j < cols; j++ {
+	
+	// Create virtual map (always 256x224)
+	virtualMap := make([][]rune, VirtualMapHeight)
+	for i := range virtualMap {
+		virtualMap[i] = make([]rune, VirtualMapWidth)
+		for j := 0; j < VirtualMapWidth; j++ {
 			if unicode {
-				grid[i][j] = '░' // Light grass/ground
+				virtualMap[i][j] = '░' // Light grass/ground
 			} else {
-				grid[i][j] = '.'
+				virtualMap[i][j] = '.'
 			}
 		}
 	}
 	
-	slots := layout.Grid(repo.Root, cols, rows)
-	for _, s := range slots {
-		renderBuilding(grid, repo, s, cols, rows, unicode)
+	// Generate layout on virtual map dimensions
+	buildingSlots, roadSlots := layout.BSPWithRoads(repo.Root, VirtualMapWidth, VirtualMapHeight)
+	
+	// Render roads first (so buildings can overlap them)
+	for _, road := range roadSlots {
+		renderRoad(virtualMap, road, VirtualMapWidth, VirtualMapHeight, unicode)
 	}
 	
-	lines := make([]string, rows)
-	for y := 0; y < rows; y++ {
-		lines[y] = string(grid[y])
+	// Then render buildings
+	for _, s := range buildingSlots {
+		renderBuilding(virtualMap, repo, s, VirtualMapWidth, VirtualMapHeight, unicode)
 	}
 	
-	// Add roads/paths between districts
-	addRoads(grid, slots, cols, rows, unicode)
+	// Create viewport of the virtual map
+	viewportX, viewportY := calculateViewport(cols, rows)
+	canvas := extractViewport(virtualMap, cols, rows, viewportX, viewportY)
+	
 	// Count active animations
 	animCount := 0
 	for _, node := range repo.Index {
@@ -76,7 +90,13 @@ func DeriveWithFPS(repo *domain.RepoState, cols, rows int, unicode bool, fps flo
 			animCount)
 	}
 	
-	return Scene{Canvas: lines, W: cols, H: rows, Status: status}
+	return Scene{
+		Canvas: canvas, 
+		W: cols, H: rows, 
+		Status: status,
+		VirtualMap: virtualMap,
+		ViewportX: viewportX, ViewportY: viewportY,
+	}
 }
 
 func glyphFor(repo *domain.RepoState, path string, unicode bool) rune {
@@ -254,65 +274,236 @@ func renderBuilding(grid [][]rune, repo *domain.RepoState, slot layout.Slot, col
 	}
 }
 
-// drawDistrict renders a district (directory) with gates and nameplate
+// drawDistrict renders a district (directory) as a larger Angband-style building
 func drawDistrict(grid [][]rune, slot layout.Slot, node *domain.FileNode, cols, rows int, unicode bool) {
 	x, y := slot.X, slot.Y
 	w, h := slot.W, slot.H
 	
 	if unicode {
-		// District boundary with gate
+		// Draw district as a multi-room building with internal structure
 		for dx := 0; dx < w && x+dx < cols; dx++ {
 			for dy := 0; dy < h && y+dy < rows; dy++ {
 				if dx == 0 || dx == w-1 || dy == 0 || dy == h-1 {
-					if dx == w/2 && dy == 0 {
-						grid[y+dy][x+dx] = '⌬' // Gate
+					// Walls
+					if (dx == 0 || dx == w-1) && (dy == 0 || dy == h-1) {
+						grid[y+dy][x+dx] = '▣' // Corner
+					} else if dx == 0 || dx == w-1 {
+						grid[y+dy][x+dx] = '▮' // Vertical wall
 					} else {
-						grid[y+dy][x+dx] = '▢' // District wall
+						grid[y+dy][x+dx] = '▬' // Horizontal wall
+					}
+					// Door in the middle of bottom wall
+					if dy == h-1 && dx == w/2 {
+						grid[y+dy][x+dx] = '▫' // Door
 					}
 				} else {
-					grid[y+dy][x+dx] = '⌂' // Houses inside district
+					// Interior - show different room types
+					if dx == 1 && dy == 1 {
+						grid[y+dy][x+dx] = '⌂' // Main room
+					} else if dx == w-2 && dy == 1 && w > 3 {
+						grid[y+dy][x+dx] = '◊' // Side room
+					} else {
+						grid[y+dy][x+dx] = '·' // Floor
+					}
 				}
 			}
 		}
 	} else {
-		// ASCII district
+		// ASCII district - structured building
 		for dx := 0; dx < w && x+dx < cols; dx++ {
 			for dy := 0; dy < h && y+dy < rows; dy++ {
 				if dx == 0 || dx == w-1 || dy == 0 || dy == h-1 {
-					if dx == w/2 && dy == 0 {
-						grid[y+dy][x+dx] = '^' // Gate
+					// Walls with corners
+					if (dx == 0 || dx == w-1) && (dy == 0 || dy == h-1) {
+						grid[y+dy][x+dx] = '+' // Corner
 					} else {
-						grid[y+dy][x+dx] = '#' // District wall
+						grid[y+dy][x+dx] = '#' // Wall
+					}
+					// Door
+					if dy == h-1 && dx == w/2 {
+						grid[y+dy][x+dx] = '=' // Door
 					}
 				} else {
-					grid[y+dy][x+dx] = 'H' // Houses inside district
+					// Interior rooms
+					if dx == 1 && dy == 1 {
+						grid[y+dy][x+dx] = 'D' // Directory marker
+					} else if dx == w-2 && dy == 1 && w > 3 {
+						grid[y+dy][x+dx] = 'o' // Sub-room
+					} else {
+						grid[y+dy][x+dx] = '.' // Floor
+					}
 				}
 			}
 		}
 	}
 }
 
-// drawBuilding renders a single building (file)
+// drawBuilding renders a single building (file) as a multi-glyph structure
 func drawBuilding(grid [][]rune, slot layout.Slot, node *domain.FileNode, cols, rows int, unicode bool) {
 	x, y := slot.X, slot.Y
-	if x >= cols || y >= rows {
-		return
-	}
+	w, h := slot.W, slot.H
 	
 	archetype := getArchetype(node)
-	glyph := glyphForArchetype(archetype, node.Size, unicode)
-	grid[y][x] = glyph
+	
+	if unicode {
+		// Multi-glyph Unicode buildings
+		for dx := 0; dx < w && x+dx < cols; dx++ {
+			for dy := 0; dy < h && y+dy < rows; dy++ {
+				if dx == 0 || dx == w-1 || dy == 0 || dy == h-1 {
+					// Building outline
+					if (dx == 0 || dx == w-1) && (dy == 0 || dy == h-1) {
+						grid[y+dy][x+dx] = '▪' // Corner
+					} else {
+						grid[y+dy][x+dx] = getBuildingWall(archetype, unicode)
+					}
+					// Door
+					if dy == h-1 && dx == w/2 {
+						grid[y+dy][x+dx] = '▫'
+					}
+				} else {
+					// Interior based on archetype
+					grid[y+dy][x+dx] = getBuildingInterior(archetype, node.Size, unicode)
+				}
+			}
+		}
+	} else {
+		// ASCII multi-glyph buildings
+		for dx := 0; dx < w && x+dx < cols; dx++ {
+			for dy := 0; dy < h && y+dy < rows; dy++ {
+				if dx == 0 || dx == w-1 || dy == 0 || dy == h-1 {
+					// Building outline
+					if (dx == 0 || dx == w-1) && (dy == 0 || dy == h-1) {
+						grid[y+dy][x+dx] = '+'
+					} else {
+						grid[y+dy][x+dx] = getBuildingWall(archetype, unicode)
+					}
+					// Door
+					if dy == h-1 && dx == w/2 {
+						grid[y+dy][x+dx] = '='
+					}
+				} else {
+					// Interior
+					grid[y+dy][x+dx] = getBuildingInterior(archetype, node.Size, unicode)
+				}
+			}
+		}
+	}
 }
 
-// drawAnimationEffect renders animation states
+// getBuildingWall returns appropriate wall character for building type
+func getBuildingWall(arch Archetype, unicode bool) rune {
+	if unicode {
+		switch arch {
+		case Library:
+			return '▬' // Solid wall for libraries
+		case Kiosk:
+			return '▢' // Light wall for kiosks
+		case Atelier:
+			return '▥' // Dotted wall for ateliers
+		case Warehouse:
+			return '▦' // Heavy wall for warehouses
+		case Academy:
+			return '▤' // Patterned wall for schools
+		case Lantern:
+			return '▨' // Diagonal wall for lanterns
+		case Shrine:
+			return '▩' // Dark wall for shrines
+		default:
+			return '▬' // Default wall
+		}
+	} else {
+		return '#' // ASCII wall
+	}
+}
+
+// getBuildingInterior returns interior character based on archetype and size
+func getBuildingInterior(arch Archetype, size int64, unicode bool) rune {
+	if unicode {
+		switch arch {
+		case Library:
+			return '■' // Books/shelves
+		case Kiosk:
+			return '○' // Notice board
+		case Atelier:
+			return '◆' // Art supplies
+		case Warehouse:
+			if size > 1024*1024 {
+				return '▦' // Heavy storage
+			}
+			return '▤' // Light storage
+		case Academy:
+			return '⌂' // Desks
+		case Lantern:
+			return '✦' // Light source
+		case Shrine:
+			return '♦' // Sacred item
+		default:
+			return '·' // Floor
+		}
+	} else {
+		// ASCII interiors
+		switch arch {
+		case Library:
+			return 'B' // Books
+		case Kiosk:
+			return 'i' // Info
+		case Atelier:
+			return 'A' // Art
+		case Warehouse:
+			return 'S' // Storage
+		case Academy:
+			return 'T' // Teaching
+		case Lantern:
+			return '*' // Light
+		case Shrine:
+			return '^' // Sacred
+		default:
+			return '.' // Floor
+		}
+	}
+}
+
+// drawAnimationEffect renders animation states across the entire building
 func drawAnimationEffect(grid [][]rune, slot layout.Slot, state domain.FileState, cols, rows int, unicode bool) {
 	x, y := slot.X, slot.Y
-	if x >= cols || y >= rows {
-		return
+	w, h := slot.W, slot.H
+	
+	// Fill the entire building area with animation effect
+	animGlyph := glyphForState(state, unicode)
+	
+	for dx := 0; dx < w && x+dx < cols; dx++ {
+		for dy := 0; dy < h && y+dy < rows; dy++ {
+			// For construction/demolition, show effect throughout
+			if state == domain.StateNew || state == domain.StateDeleted {
+				grid[y+dy][x+dx] = animGlyph
+			} else if state == domain.StateModified {
+				// For modification, show smoke/activity effects around building
+				if dx == 0 || dx == w-1 || dy == 0 {
+					grid[y+dy][x+dx] = animGlyph
+				}
+			}
+		}
+	}
+}
+
+// renderRoad draws a road segment
+func renderRoad(grid [][]rune, slot layout.Slot, cols, rows int, unicode bool) {
+	x, y := slot.X, slot.Y
+	w, h := slot.W, slot.H
+	
+	roadGlyph := '·'
+	if unicode {
+		roadGlyph = '▫' // Light road glyph
 	}
 	
-	glyph := glyphForState(state, unicode)
-	grid[y][x] = glyph
+	// Fill the road area
+	for dx := 0; dx < w && x+dx < cols; dx++ {
+		for dy := 0; dy < h && y+dy < rows; dy++ {
+			if x+dx >= 0 && y+dy >= 0 {
+				grid[y+dy][x+dx] = roadGlyph
+			}
+		}
+	}
 }
 
 // addRoads draws paths between districts and major buildings
@@ -330,4 +521,72 @@ func addRoads(grid [][]rune, slots []layout.Slot, cols, rows int, unicode bool) 
 			}
 		}
 	}
+}
+
+// calculateViewport determines where to position the viewport on the virtual map
+func calculateViewport(viewWidth, viewHeight int) (int, int) {
+	// If viewport is larger than virtual map, center the virtual map
+	if viewWidth >= VirtualMapWidth && viewHeight >= VirtualMapHeight {
+		return 0, 0 // Show entire virtual map
+	}
+	
+	// If viewport is smaller, center it on the virtual map
+	viewportX := (VirtualMapWidth - viewWidth) / 2
+	viewportY := (VirtualMapHeight - viewHeight) / 2
+	
+	// Ensure viewport doesn't go negative
+	if viewportX < 0 {
+		viewportX = 0
+	}
+	if viewportY < 0 {
+		viewportY = 0
+	}
+	
+	return viewportX, viewportY
+}
+
+// extractViewport extracts a viewport from the virtual map
+func extractViewport(virtualMap [][]rune, viewWidth, viewHeight, viewportX, viewportY int) []string {
+	canvas := make([]string, viewHeight)
+	
+	for y := 0; y < viewHeight; y++ {
+		line := make([]rune, viewWidth)
+		for x := 0; x < viewWidth; x++ {
+			mapX := viewportX + x
+			mapY := viewportY + y
+			
+			// If viewport is larger than virtual map, show virtual map centered with padding
+			if viewWidth > VirtualMapWidth || viewHeight > VirtualMapHeight {
+				// Calculate centering offsets
+				offsetX := (viewWidth - VirtualMapWidth) / 2
+				offsetY := (viewHeight - VirtualMapHeight) / 2
+				
+				if x >= offsetX && x < offsetX+VirtualMapWidth && 
+				   y >= offsetY && y < offsetY+VirtualMapHeight {
+					// Inside virtual map bounds
+					virtualX := x - offsetX
+					virtualY := y - offsetY
+					if virtualX >= 0 && virtualX < VirtualMapWidth && 
+					   virtualY >= 0 && virtualY < VirtualMapHeight {
+						line[x] = virtualMap[virtualY][virtualX]
+					} else {
+						line[x] = ' ' // Padding
+					}
+				} else {
+					line[x] = ' ' // Padding around virtual map
+				}
+			} else {
+				// Normal viewport (smaller than virtual map)
+				if mapX >= 0 && mapX < VirtualMapWidth && 
+				   mapY >= 0 && mapY < VirtualMapHeight {
+					line[x] = virtualMap[mapY][mapX]
+				} else {
+					line[x] = ' ' // Outside virtual map bounds
+				}
+			}
+		}
+		canvas[y] = string(line)
+	}
+	
+	return canvas
 }
